@@ -1,5 +1,8 @@
 c
 c
+c    this subroutine is basically a wrapper for the random number
+C     generator dlaran, which is an LAPACK auxilliary routine.
+c      
         real *8 function hkrand(iseed_hk)
         implicit real *8 (a-h,o-z)
         dimension iseed(4)
@@ -13,7 +16,7 @@ c
         iseed(4)=mod(2*iseed_hk+1,4096)
         endif
 c
-        hkrand=dlaran(iseed)
+        hkrand = dlaran(iseed)
 c
         return
         end
