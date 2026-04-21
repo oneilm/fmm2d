@@ -1,0 +1,77 @@
+Pre-computation Plan API for the Laplace FMM
+=============================================
+
+We added a plan-based interface to the Laplace FMM routines in fmm2d
+(cfmm2d, lfmm2d, rfmm2d). The motivation is that many applications --
+iterative solvers, time-stepping schemes, optimization loops -- fix the
+source/target geometry while varying the charge densities between calls.
+In that setting, the tree construction and interaction-list computation
+(which are geometry-only) are redundant on every call. The plan API makes
+it possible to do that work once and reuse it.
+
+How it works
+------------
+The standard cfmm2d call does three things internally: (1) builds a
+quadtree over the sources and targets, (2) computes interaction lists
+(near-field list 1, far-field lists 2-4) and the binomial translation
+table, and (3) runs the 8-step FMM traversal. Of these, steps 1 and 2
+depend only on geometry, not on charge values.
+
+The plan stores the output of steps 1 and 2: the sorted source/target
+coordinates, the quadtree, all four interaction lists, the binomial table,
+and the expansion address array. On each execute call, only step 3 runs.
+The expansion buffer (rmlexp) lives inside the plan and is reallocated
+only if the number of charge densities nd changes between calls.
+
+Interface
+---------
+The API follows the same pattern for all three Laplace types:
+
+  call cfmm2d_build_plan(eps, ns, sources, nt, targ, ier)
+  ! ... change charges as needed ...
+  call cfmm2d_execute_plan(nd, ifcharge, charge, ifdipole, dipstr,
+       iper, ifpgh, pot, grad, hess, ifpghtarg, pottarg, gradtarg, hesstarg, ier)
+  call cfmm2d_destroy_plan(ier)
+
+lfmm2d_build_plan / lfmm2d_execute_plan and rfmm2d_build_plan /
+rfmm2d_execute_plan follow the same pattern with the same signatures as
+their direct counterparts. Because lfmm2d and rfmm2d are both thin
+wrappers around cfmm2d internally, they share the same underlying plan;
+cfmm2d_destroy_plan frees it for all three. At most one plan exists at a
+time. A C header (include/fmm2d/laplace.h) provides declarations for use
+from C/C++.
+
+Performance
+-----------
+At 1,000,000 sources and 1,000,000 targets (eps = 1e-6, OpenMP enabled):
+
+  cfmm2d (direct)     1.18 s
+  cfmm2d_build_plan   0.50 s
+  cfmm2d_execute_plan 0.65 s
+
+Each execute call is ~1.8x faster than the full direct call. The plan
+recovers its build cost after roughly 2-3 execute calls, and the savings
+grow with every subsequent call.
+
+Implementation notes
+--------------------
+The existing cfmm2dmain subroutine is called from two places (cfmm2d.f
+and cfmm2d_ndiv.f), so its interface was left untouched. Instead, a new
+cfmm2dmain_pre subroutine was created that accepts the pre-computed
+interaction lists and binomial table as arguments. The plan itself is a
+Fortran 2003 derived type with allocatable components, stored as a
+module-level variable. The module is in a .f90 free-format file; the
+existing makefile already had a rule for .f90 objects, so only two object
+names needed to be added to LOBJS.
+
+Files created
+-------------
+  src/laplace/cfmm2dmain_pre.f
+  src/laplace/fmm2d_plan.f90
+  include/fmm2d/laplace.h
+  test/laplace/test_plan.f90
+  examples/laplace_plan_example.f90
+
+Files modified
+--------------
+  makefile

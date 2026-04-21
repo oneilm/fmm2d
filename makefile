@@ -119,7 +119,8 @@ LOBJS = $(LAP)/l2dterms.o \
 	$(LAP)/rfmm2d.o $(LAP)/rfmm2dwrap.o \
 	$(LAP)/rfmm2dwrap_vec.o $(LAP)/lndiv2d.o \
 	$(LAP)/rfmm2d_ndiv.o $(LAP)/lfmm2d_ndiv.o \
-	$(LAP)/cfmm2d_ndiv.o 
+	$(LAP)/cfmm2d_ndiv.o \
+	$(LAP)/cfmm2dmain_pre.o $(LAP)/fmm2d_plan.o
 
 BH = src/biharmonic
 BHOBJS = $(BH)/bh2dterms.o \
@@ -267,6 +268,10 @@ test/rfmm2d_vec:
 
 test/bhfmm2d:
 	$(FC) $(FFLAGS) test/biharmonic/test_bhfmm2d.f $(TOBJS) $(COMOBJS) $(BHOBJS) -o test/biharmonic/int2-test-bhfmm2d $(LIBS)
+
+test/laplace_plan:
+	$(FC) $(FFLAGS) test/laplace/test_plan.f90 $(TOBJS) $(COMOBJS) $(LOBJS) -o test/laplace/int2-test-plan $(LIBS)
+	test/laplace/int2-test-plan
 
 
 #python
