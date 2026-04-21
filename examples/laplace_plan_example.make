@@ -46,9 +46,9 @@ EXTRA_OBJS = ../src/common/dlaran.o
 
 default: all
 
-all:
+all: $(EXTRA_OBJS)
 	$(FC) $(FFLAGS) -o $(PROJECT) laplace_plan_example.f90 \
-	    $(EXTRA_OBJS) $(STATICLIB) $(LIBS)
+	     $(EXTRA_OBJS) $(STATICLIB) $(LIBS)
 	./$(PROJECT)
 
 clean:
