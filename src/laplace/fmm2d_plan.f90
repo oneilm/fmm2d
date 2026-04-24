@@ -93,6 +93,9 @@ module cfmm2d_plan_mod
     complex*16, allocatable :: locloc_jexp1tmp(:,:,:)  ! (nd, 0:nmax, nthreads)
     complex*16, allocatable :: locloc_jexp2tmp(:,:,:)  ! (nd, 0:nmax, nthreads)
     integer :: mploc_nd = 0
+
+    ! Level of each box (build-time; used to flatten step 4 across all levels).
+    integer, allocatable :: box_level(:)   ! (nboxes)
   end type cfmm2d_plan_t
 
   type(cfmm2d_plan_t), save :: the_plan
@@ -171,6 +174,15 @@ subroutine cfmm2d_build_plan(eps, ns, sources, nt, targ, ier)
        nlmin, nlmax, ifunif, iper, nlevels, nboxes, ltree, &
        the_plan%itree, the_plan%iptr, the_plan%tcenters, &
        the_plan%boxsize)
+
+  ! Level of each box: laddr(k,i) = itree(iptr(1) + 2*i + (k-1))
+  allocate(the_plan%box_level(nboxes))
+  do i = 0, nlevels
+    do ibox = the_plan%itree(the_plan%iptr(1) + 2*i), &
+               the_plan%itree(the_plan%iptr(1) + 2*i + 1)
+      the_plan%box_level(ibox) = i
+    enddo
+  enddo
 
   ! Compute sort permutations
   allocate(the_plan%isrc(ns))
@@ -517,7 +529,8 @@ subroutine cfmm2d_execute_plan(nd, ifcharge, charge, ifdipole, dipstr, &
        the_plan%mploc_z0pow1, the_plan%mploc_z0pow2, &
        the_plan%mpmp_z0pow1, the_plan%mpmp_z0pow2, &
        the_plan%mpmp_hexp1tmp, the_plan%mpmp_hexp2tmp, &
-       the_plan%locloc_jexp1tmp, the_plan%locloc_jexp2tmp)
+       the_plan%locloc_jexp1tmp, the_plan%locloc_jexp2tmp, &
+       lmptot, the_plan%box_level)
 
   ! Reorder outputs back to original index order
   if (ifpgh .eq. 1) then
@@ -594,6 +607,7 @@ subroutine cfmm2d_destroy_plan(ier)
   if (allocated(the_plan%mpmp_hexp2tmp))     deallocate(the_plan%mpmp_hexp2tmp)
   if (allocated(the_plan%locloc_jexp1tmp))   deallocate(the_plan%locloc_jexp1tmp)
   if (allocated(the_plan%locloc_jexp2tmp))   deallocate(the_plan%locloc_jexp2tmp)
+  if (allocated(the_plan%box_level))         deallocate(the_plan%box_level)
 
   the_plan%ns        = 0
   the_plan%nt        = 0

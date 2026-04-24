@@ -35,7 +35,8 @@ cc (at your option) any later version.
      $     mploc_z0pow1,mploc_z0pow2,
      $     mpmp_z0pow1,mpmp_z0pow2,
      $     mpmp_hexp1tmp,mpmp_hexp2tmp,
-     $     locloc_jexp1tmp,locloc_jexp2tmp)
+     $     locloc_jexp1tmp,locloc_jexp2tmp,
+     $     lmptot,box_level)
 c
 c   Cauchy FMM main loop using pre-computed interaction lists and
 c   binomial table. Interface identical to cfmm2dmain except that
@@ -108,6 +109,8 @@ c     Pre-computed list arguments
 
 c     Plan workspace arguments
       integer nmax_plan
+      integer lmptot
+      integer box_level(nboxes)
 c     M2L step 4: per-thread scratch arrays
       complex *16 mploc_hexp1tmp(nd,0:nmax_plan,*)
       complex *16 mploc_jexp2tmp(nd,0:nmax_plan,*)
@@ -177,15 +180,11 @@ C
 c
 c       ... set all multipole and local expansions to zero
 c
-      do ilev = 0,nlevels
-C$OMP PARALLEL DO DEFAULT (SHARED)
-C$OMP$PRIVATE(ibox)
-         do ibox = laddr(1,ilev),laddr(2,ilev)
-            call l2dmpzero(nd,rmlexp(iaddr(1,ibox)),nterms(ilev))
-            call l2dmpzero(nd,rmlexp(iaddr(2,ibox)),nterms(ilev))
-         enddo
+C$OMP PARALLEL DO DEFAULT(SHARED) PRIVATE(i)
+      do i=1,lmptot
+         rmlexp(i) = 0.0d0
+      enddo
 C$OMP END PARALLEL DO
-       enddo
 
 c     Set scjsort
       do ilev = 0,nlevels
@@ -453,47 +452,44 @@ c       expansions
 
       call cpu_time(time1)
 C$    time1=omp_get_wtime()
-      do ilev = 2,nlevels
-
-       tt1 = second()
+c     Flattened over all levels 2..nlevels: one barrier instead of nlevels-1.
+c     ilev is PRIVATE, looked up from box_level(ibox) precomputed at build time.
 C$OMP PARALLEL DO DEFAULT(SHARED)
-C$OMP$PRIVATE(ibox,jbox,istart,iend,npts,mptemp,i,nlist2,tid)
+C$OMP$PRIVATE(ibox,jbox,istart,iend,npts,i,tid,ilev)
 C$OMP$SCHEDULE(DYNAMIC)
-        do ibox = laddr(1,ilev),laddr(2,ilev)
-          npts = 0
-          if(ifpghtarg.gt.0) then
-            istart = itargse(1,ibox)
-            iend = itargse(2,ibox)
-            npts = npts + iend-istart+1
-          endif
-
-          istart = iexpcse(1,ibox)
-          iend = iexpcse(2,ibox)
+      do ibox = laddr(1,2),laddr(2,nlevels)
+        ilev = box_level(ibox)
+        npts = 0
+        if(ifpghtarg.gt.0) then
+          istart = itargse(1,ibox)
+          iend = itargse(2,ibox)
           npts = npts + iend-istart+1
+        endif
 
-          if(ifpgh.gt.0) then
-            istart = isrcse(1,ibox)
-            iend = isrcse(2,ibox)
-            npts = npts + iend-istart+1
-          endif
+        istart = iexpcse(1,ibox)
+        iend = iexpcse(2,ibox)
+        npts = npts + iend-istart+1
 
-          if(npts.gt.0) then
-            tid = omp_get_thread_num() + 1
-            do i=1,nlist2s(ibox)
-              jbox = list2(i,ibox)
-              call l2dmploc_work(nd,rscales(ilev),
-     $          centers(1,jbox),rmlexp(iaddr(1,jbox)),nterms(ilev),
-     2          rscales(ilev),centers(1,ibox),rmlexp(iaddr(2,ibox)),
-     3          nterms(ilev),carray,ldc,
-     4          mploc_z0pow1(0,tid),mploc_z0pow2(0,tid),
-     5          mploc_hexp1tmp(1,0,tid),mploc_jexp2tmp(1,0,tid))
-            enddo
-          endif
-        enddo
-C$OMP END PARALLEL DO
-       tt2 = second()
-       timelev(ilev) = tt2-tt1
+        if(ifpgh.gt.0) then
+          istart = isrcse(1,ibox)
+          iend = isrcse(2,ibox)
+          npts = npts + iend-istart+1
+        endif
+
+        if(npts.gt.0) then
+          tid = omp_get_thread_num() + 1
+          do i=1,nlist2s(ibox)
+            jbox = list2(i,ibox)
+            call l2dmploc_work(nd,rscales(ilev),
+     $        centers(1,jbox),rmlexp(iaddr(1,jbox)),nterms(ilev),
+     2        rscales(ilev),centers(1,ibox),rmlexp(iaddr(2,ibox)),
+     3        nterms(ilev),carray,ldc,
+     4        mploc_z0pow1(0,tid),mploc_z0pow2(0,tid),
+     5        mploc_hexp1tmp(1,0,tid),mploc_jexp2tmp(1,0,tid))
+          enddo
+        endif
       enddo
+C$OMP END PARALLEL DO
       call cpu_time(time2)
 C$    time2=omp_get_wtime()
       timeinfo(4) = time2-time1
