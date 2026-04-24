@@ -1246,6 +1246,123 @@ c
 c
 c
 c
+c**********************************************************************
+      subroutine l2dmploc_work(nd,rscale1,center1,hexp1,nterms1,
+     $                          rscale2,center2,jexp2,nterms2,
+     $                          carray,ldc,hexp1tmp,jexp2tmp)
+      implicit none
+C**********************************************************************
+C
+C     Shift local expansions HEXP1 to a new center and INCREMENT
+C     the local expansions JEXP2 accordingly.
+C
+C     This is the plan-based variant of l2dmploc: it accepts
+C     pre-allocated scratch arrays hexp1tmp and jexp2tmp as arguments
+C     instead of allocating them internally.  The caller must supply
+C     arrays of size at least (nd, 0:nterms1) and (nd, 0:nterms2).
+C
+C---------------------------------------------------------------------
+C     INPUT:
+C     nd      : vector length (number of multipole expansions)
+C     rscale1 : scaling parameter for original local expansion
+C     center1 : center of original local expansion
+C     hexp1   : coefficients of original local expansion
+C     nterms1 : order of original local expansion
+C     rscale2 : scaling parameter for shifted local expansion
+C     center2 : center of shifted local expansion
+C     nterms2 : order of output local expansion
+C     carray  : array of binomial coefficients
+C     ldc     : leading dimension of carray
+C     hexp1tmp: pre-allocated scratch, size (nd, 0:nterms1) or larger
+C     jexp2tmp: pre-allocated scratch, size (nd, 0:nterms2) or larger
+C---------------------------------------------------------------------
+C     OUTPUT:
+C     jexp2  : coefficients of shifted local expansion (incremented)
+C---------------------------------------------------------------------
+      integer nterms1,nterms2,nterms,i,j,ii,nd,ldc,nmax
+      real *8 rscale1,rscale2,center1(2),center2(2),zdiff(2)
+      real *8 carray(0:ldc,0:ldc)
+      complex *16 hexp1(nd,0:nterms1),jexp2(nd,0:nterms2)
+      complex *16 hexp1tmp(nd,0:*),jexp2tmp(nd,0:*)
+      complex *16, allocatable :: z0pow1(:),z0pow2(:)
+      real *8 rtmp
+      complex *16 z0,ztemp1,ztemp2,ztemp3
+c
+      nterms = nterms1+nterms2
+      nmax = max(nterms1,nterms2)
+c
+      zdiff(1)=center2(1)-center1(1)
+      zdiff(2)=center2(2)-center1(2)
+      z0 = -dcmplx(zdiff(1),zdiff(2))
+
+      allocate(z0pow1(0:nmax))
+      allocate(z0pow2(0:nmax))
+      ztemp1 = 1/z0
+      z0pow1(0) = 1
+      z0pow2(0) = 1
+      ztemp2 = ztemp1*rscale2
+      ztemp3 = -ztemp1*rscale1
+      do i=1,nmax
+        z0pow2(i) = ztemp2
+        z0pow1(i) = ztemp3
+        ztemp2 = ztemp2*ztemp1*rscale2
+        ztemp3 = -ztemp3*ztemp1*rscale1
+      enddo
+
+      do i=0,nterms1
+        do ii=1,nd
+          hexp1tmp(ii,i) = 0
+        enddo
+      enddo
+
+      do i=0,nterms2
+        do ii=1,nd
+          jexp2tmp(ii,i) = 0
+        enddo
+      enddo
+
+      do i=0,nterms1
+        do ii=1,nd
+          hexp1tmp(ii,i) = hexp1(ii,i)*z0pow1(i)
+        enddo
+      enddo
+
+      rtmp = log(abs(z0))
+      do ii=1,nd
+        jexp2tmp(ii,0) = hexp1tmp(ii,0)*rtmp
+      enddo
+
+      do j=1,nterms1
+        do ii=1,nd
+          jexp2tmp(ii,0) = jexp2tmp(ii,0)+hexp1tmp(ii,j)
+        enddo
+      enddo
+
+      do i=1,nterms2
+        do ii=1,nd
+          jexp2tmp(ii,i) = jexp2tmp(ii,i) - hexp1tmp(ii,0)/i
+        enddo
+        do j=1,nterms1
+          do ii=1,nd
+            jexp2tmp(ii,i) = jexp2tmp(ii,i) +
+     1          hexp1tmp(ii,j)*carray(i+j-1,j-1)
+          enddo
+        enddo
+
+        do ii=1,nd
+          jexp2tmp(ii,i) = jexp2tmp(ii,i)*z0pow2(i)
+        enddo
+      enddo
+
+      do i=0,nterms2
+        do ii=1,nd
+          jexp2(ii,i) = jexp2(ii,i) + jexp2tmp(ii,i)
+        enddo
+      enddo
+
+      return
+      end
+c
 c
 c
 c

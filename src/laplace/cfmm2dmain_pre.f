@@ -30,7 +30,8 @@ cc (at your option) any later version.
      $     mnlist1,nlist1s,list1,
      $     mnlist2,nlist2s,list2,
      $     mnlist3,nlist3s,list3,
-     $     mnlist4,nlist4s,list4)
+     $     mnlist4,nlist4s,list4,
+     $     nmax_plan,mploc_hexp1tmp,mploc_jexp2tmp)
 c
 c   Cauchy FMM main loop using pre-computed interaction lists and
 c   binomial table. Interface identical to cfmm2dmain except that
@@ -101,9 +102,16 @@ c     Pre-computed list arguments
       integer list1(mnlist1,nboxes),list2(mnlist2,nboxes)
       integer list3(mnlist3,nboxes),list4(mnlist4,nboxes)
 
+c     Pre-allocated M2L scratch arrays indexed by thread (step 4)
+      integer nmax_plan
+      complex *16 mploc_hexp1tmp(nd,0:nmax_plan,*)
+      complex *16 mploc_jexp2tmp(nd,0:nmax_plan,*)
+
 c     temp variables
-      integer i,j,k,l,idim
+      integer i,j,k,l,idim,tid
       integer ibox,jbox,ilev,npts
+      integer omp_get_thread_num
+      external omp_get_thread_num
       integer nchild,nlist1,nlist2,nlist3,nlist4
 
       integer istart,iend,istarts,iends
@@ -426,7 +434,7 @@ C$    time1=omp_get_wtime()
 
        tt1 = second()
 C$OMP PARALLEL DO DEFAULT(SHARED)
-C$OMP$PRIVATE(ibox,jbox,istart,iend,npts,mptemp,i,nlist2)
+C$OMP$PRIVATE(ibox,jbox,istart,iend,npts,mptemp,i,nlist2,tid)
 C$OMP$SCHEDULE(DYNAMIC)
         do ibox = laddr(1,ilev),laddr(2,ilev)
           npts = 0
@@ -447,12 +455,14 @@ C$OMP$SCHEDULE(DYNAMIC)
           endif
 
           if(npts.gt.0) then
+            tid = omp_get_thread_num() + 1
             do i=1,nlist2s(ibox)
               jbox = list2(i,ibox)
-              call l2dmploc(nd,rscales(ilev),
+              call l2dmploc_work(nd,rscales(ilev),
      $          centers(1,jbox),rmlexp(iaddr(1,jbox)),nterms(ilev),
      2          rscales(ilev),centers(1,ibox),rmlexp(iaddr(2,ibox)),
-     3          nterms(ilev),carray,ldc)
+     3          nterms(ilev),carray,ldc,
+     4          mploc_hexp1tmp(1,0,tid),mploc_jexp2tmp(1,0,tid))
             enddo
           endif
         enddo

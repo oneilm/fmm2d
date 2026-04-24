@@ -73,6 +73,14 @@ module cfmm2d_plan_mod
     ! Expansion buffer (nd-dependent; reallocated when nd changes)
     real*8,  allocatable :: rmlexp(:)
     integer :: rmlexp_nd = 0
+
+    ! Pre-allocated M2L scratch arrays for step 4.
+    ! Indexed as mploc_hexp1tmp(nd, 0:nmax, nthreads) so each OpenMP
+    ! thread has its own private workspace without repeated allocation.
+    ! Reallocated at execute time when nd changes.
+    complex*16, allocatable :: mploc_hexp1tmp(:,:,:)
+    complex*16, allocatable :: mploc_jexp2tmp(:,:,:)
+    integer :: mploc_nd = 0
   end type cfmm2d_plan_t
 
   type(cfmm2d_plan_t), save :: the_plan
@@ -270,9 +278,11 @@ subroutine cfmm2d_execute_plan(nd, ifcharge, charge, ifdipole, dipstr, &
   complex*16,  intent(inout) :: pottarg(nd,*), gradtarg(nd,*), hesstarg(nd,*)
   integer,     intent(out)   :: ier
 
-  integer :: ns, nt, nlevels, nboxes, lmptot, lmptmp
+  integer :: ns, nt, nlevels, nboxes, lmptot, lmptmp, nthreads
   integer :: i, idim, ibox
   integer, allocatable :: iaddr(:,:)
+  integer :: omp_get_max_threads
+  external omp_get_max_threads
 
   complex*16, allocatable :: chargesort(:,:), dipstrsort(:,:)
   complex*16, allocatable :: potsort(:,:), gradsort(:,:), hesssort(:,:)
@@ -318,6 +328,22 @@ subroutine cfmm2d_execute_plan(nd, ifcharge, charge, ifdipole, dipstr, &
     allocate(the_plan%rmlexp(lmptot), stat=ier)
     if (ier .ne. 0) return
     the_plan%rmlexp_nd = nd
+  endif
+
+  ! (Re)allocate per-thread M2L scratch arrays if nd changed
+  nthreads = omp_get_max_threads()
+  if (the_plan%mploc_nd .ne. nd) then
+    if (allocated(the_plan%mploc_hexp1tmp)) &
+      deallocate(the_plan%mploc_hexp1tmp)
+    if (allocated(the_plan%mploc_jexp2tmp)) &
+      deallocate(the_plan%mploc_jexp2tmp)
+    allocate(the_plan%mploc_hexp1tmp(nd, 0:the_plan%nmax, nthreads), &
+             stat=ier)
+    if (ier .ne. 0) return
+    allocate(the_plan%mploc_jexp2tmp(nd, 0:the_plan%nmax, nthreads), &
+             stat=ier)
+    if (ier .ne. 0) return
+    the_plan%mploc_nd = nd
   endif
 
   ! Allocate and reorder charges/dipoles
@@ -428,7 +454,9 @@ subroutine cfmm2d_execute_plan(nd, ifcharge, charge, ifdipole, dipstr, &
        the_plan%mnlist1, the_plan%nlist1s, the_plan%list1, &
        the_plan%mnlist2, the_plan%nlist2s, the_plan%list2, &
        the_plan%mnlist3, the_plan%nlist3s, the_plan%list3, &
-       the_plan%mnlist4, the_plan%nlist4s, the_plan%list4)
+       the_plan%mnlist4, the_plan%nlist4s, the_plan%list4, &
+       the_plan%nmax, the_plan%mploc_hexp1tmp, &
+       the_plan%mploc_jexp2tmp)
 
   ! Reorder outputs back to original index order
   if (ifpgh .eq. 1) then
@@ -493,15 +521,18 @@ subroutine cfmm2d_destroy_plan(ier)
   if (allocated(the_plan%list3))      deallocate(the_plan%list3)
   if (allocated(the_plan%nlist4s))    deallocate(the_plan%nlist4s)
   if (allocated(the_plan%list4))      deallocate(the_plan%list4)
-  if (allocated(the_plan%carray))     deallocate(the_plan%carray)
-  if (allocated(the_plan%rmlexp))     deallocate(the_plan%rmlexp)
+  if (allocated(the_plan%carray))           deallocate(the_plan%carray)
+  if (allocated(the_plan%rmlexp))           deallocate(the_plan%rmlexp)
+  if (allocated(the_plan%mploc_hexp1tmp))   deallocate(the_plan%mploc_hexp1tmp)
+  if (allocated(the_plan%mploc_jexp2tmp))   deallocate(the_plan%mploc_jexp2tmp)
 
-  the_plan%ns       = 0
-  the_plan%nt       = 0
-  the_plan%nlevels  = 0
-  the_plan%nboxes   = 0
-  the_plan%ltree    = 0
+  the_plan%ns        = 0
+  the_plan%nt        = 0
+  the_plan%nlevels   = 0
+  the_plan%nboxes    = 0
+  the_plan%ltree     = 0
   the_plan%rmlexp_nd = 0
+  the_plan%mploc_nd  = 0
   plan_built = .false.
 
   return
