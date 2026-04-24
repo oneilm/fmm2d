@@ -31,7 +31,11 @@ cc (at your option) any later version.
      $     mnlist2,nlist2s,list2,
      $     mnlist3,nlist3s,list3,
      $     mnlist4,nlist4s,list4,
-     $     nmax_plan,mploc_hexp1tmp,mploc_jexp2tmp)
+     $     nmax_plan,mploc_hexp1tmp,mploc_jexp2tmp,
+     $     mploc_z0pow1,mploc_z0pow2,
+     $     mpmp_z0pow1,mpmp_z0pow2,
+     $     mpmp_hexp1tmp,mpmp_hexp2tmp,
+     $     locloc_jexp1tmp,locloc_jexp2tmp)
 c
 c   Cauchy FMM main loop using pre-computed interaction lists and
 c   binomial table. Interface identical to cfmm2dmain except that
@@ -102,14 +106,26 @@ c     Pre-computed list arguments
       integer list1(mnlist1,nboxes),list2(mnlist2,nboxes)
       integer list3(mnlist3,nboxes),list4(mnlist4,nboxes)
 
-c     Pre-allocated M2L scratch arrays indexed by thread (step 4)
+c     Plan workspace arguments
       integer nmax_plan
+c     M2L step 4: per-thread scratch arrays
       complex *16 mploc_hexp1tmp(nd,0:nmax_plan,*)
       complex *16 mploc_jexp2tmp(nd,0:nmax_plan,*)
+      complex *16 mploc_z0pow1(0:nmax_plan,*)
+      complex *16 mploc_z0pow2(0:nmax_plan,*)
+c     M2M step 3: precomputed z0pow by quadrant and per-thread scratch
+      complex *16 mpmp_z0pow1(0:nmax_plan,4)
+      complex *16 mpmp_z0pow2(0:nmax_plan,4)
+      complex *16 mpmp_hexp1tmp(nd,0:nmax_plan,*)
+      complex *16 mpmp_hexp2tmp(nd,0:nmax_plan,*)
+c     L2L step 5: per-thread scratch arrays
+      complex *16 locloc_jexp1tmp(nd,0:nmax_plan,*)
+      complex *16 locloc_jexp2tmp(nd,0:nmax_plan,*)
 
 c     temp variables
-      integer i,j,k,l,idim,tid
+      integer i,j,k,l,idim,tid,iq
       integer ibox,jbox,ilev,npts
+      real *8 dx,dy
       integer omp_get_thread_num
       external omp_get_thread_num
       integer nchild,nlist1,nlist2,nlist3,nlist4
@@ -400,20 +416,27 @@ c
       do ilev=nlevels-1,1,-1
 
 C$OMP PARALLEL DO DEFAULT(SHARED)
-C$OMP$PRIVATE(ibox,jbox,i,nchild,istart,iend,npts,mptemp)
+C$OMP$PRIVATE(ibox,jbox,i,nchild,istart,iend,npts,mptemp,tid,iq,dx,dy)
 C$OMP$SCHEDULE(DYNAMIC)
         do ibox = laddr(1,ilev),laddr(2,ilev)
           nchild = itree(iptr(4)+ibox-1)
+          tid = omp_get_thread_num()+1
           do i=1,nchild
             jbox = itree(iptr(5)+4*(ibox-1)+i-1)
             istart = isrcse(1,jbox)
             iend = isrcse(2,jbox)
             npts = iend-istart+1
             if(npts.gt.0) then
-              call l2dmpmp(nd,rscales(ilev+1),
-     1             centers(1,jbox),rmlexp(iaddr(1,jbox)),
-     2             nterms(ilev+1),rscales(ilev),centers(1,ibox),
-     3             rmlexp(iaddr(1,ibox)),nterms(ilev),carray,ldc)
+              dx = centers(1,jbox)-centers(1,ibox)
+              dy = centers(2,jbox)-centers(2,ibox)
+              iq = 1
+              if(dx.lt.0.0d0) iq = iq+2
+              if(dy.lt.0.0d0) iq = iq+1
+              call l2dmpmp_work(nd,
+     1           rmlexp(iaddr(1,jbox)),nterms(ilev+1),
+     2           rmlexp(iaddr(1,ibox)),nterms(ilev),carray,ldc,
+     3           mpmp_z0pow1(0,iq),mpmp_z0pow2(0,iq),
+     4           mpmp_hexp1tmp(1,0,tid),mpmp_hexp2tmp(1,0,tid))
             endif
           enddo
         enddo
@@ -462,7 +485,8 @@ C$OMP$SCHEDULE(DYNAMIC)
      $          centers(1,jbox),rmlexp(iaddr(1,jbox)),nterms(ilev),
      2          rscales(ilev),centers(1,ibox),rmlexp(iaddr(2,ibox)),
      3          nterms(ilev),carray,ldc,
-     4          mploc_hexp1tmp(1,0,tid),mploc_jexp2tmp(1,0,tid))
+     4          mploc_z0pow1(0,tid),mploc_z0pow2(0,tid),
+     5          mploc_hexp1tmp(1,0,tid),mploc_jexp2tmp(1,0,tid))
             enddo
           endif
         enddo
@@ -481,7 +505,7 @@ C$    time2=omp_get_wtime()
 C$    time1=omp_get_wtime()
       do ilev = 1,nlevels-1
 C$OMP PARALLEL DO DEFAULT(SHARED)
-C$OMP$PRIVATE(ibox,jbox,i,nchild,istart,iend,npts,mptemp)
+C$OMP$PRIVATE(ibox,jbox,i,nchild,istart,iend,npts,mptemp,tid,iq,dx,dy)
 C$OMP$SCHEDULE(DYNAMIC)
         do ibox = laddr(1,ilev),laddr(2,ilev)
           nchild = itree(iptr(4)+ibox-1)
@@ -503,12 +527,19 @@ C$OMP$SCHEDULE(DYNAMIC)
           endif
 
           if(npts.gt.0) then
+            tid = omp_get_thread_num()+1
             do i=1,nchild
               jbox = itree(iptr(5)+4*(ibox-1)+i-1)
-              call l2dlocloc(nd,rscales(ilev),centers(1,ibox),
-     1          rmlexp(iaddr(2,ibox)),nterms(ilev),rscales(ilev+1),
-     2          centers(1,jbox),rmlexp(iaddr(2,jbox)),nterms(ilev+1),
-     3          carray,ldc)
+              dx = centers(1,jbox)-centers(1,ibox)
+              dy = centers(2,jbox)-centers(2,ibox)
+              iq = 1
+              if(dx.lt.0.0d0) iq = iq+2
+              if(dy.lt.0.0d0) iq = iq+1
+              call l2dlocloc_work(nd,
+     1          rmlexp(iaddr(2,ibox)),nterms(ilev),
+     2          rmlexp(iaddr(2,jbox)),nterms(ilev+1),carray,ldc,
+     3          mpmp_z0pow2(0,iq),mpmp_z0pow1(0,iq),
+     4          locloc_jexp1tmp(1,0,tid),locloc_jexp2tmp(1,0,tid))
             enddo
           endif
         enddo

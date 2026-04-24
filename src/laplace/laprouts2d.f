@@ -1017,6 +1017,93 @@ c
 c
 c
 c**********************************************************************
+      subroutine l2dmpmp_work(nd,hexp1,nterms1,hexp2,nterms2,
+     $                         carray,ldc,z0pow1,z0pow2,
+     $                         hexp1tmp,hexp2tmp)
+      implicit none
+C**********************************************************************
+C
+C     Plan-based variant of l2dmpmp: shifts multipole expansion HEXP1
+C     to a new center and INCREMENTS HEXP2.
+C
+C     Accepts pre-allocated z0pow1, z0pow2, hexp1tmp, and hexp2tmp
+C     instead of allocating them internally.  The precomputed power
+C     arrays are indexed by child quadrant and supplied by the caller.
+C
+C       z0pow1(i) = (rscale1/z0)^i   (i = 0, 1, ...)
+C       z0pow2(i) = (z0/rscale2)^i   (i = 0, 1, ...)
+C
+C---------------------------------------------------------------------
+C     INPUT:
+C     nd      : vector length
+C     hexp1   : original multipole expansion coefficients
+C     nterms1 : order of original expansion
+C     nterms2 : order of shifted expansion
+C     carray  : binomial table
+C     ldc     : leading dimension of carray
+C     z0pow1  : pre-computed (rscale1/z0)^i, i=0,...
+C     z0pow2  : pre-computed (z0/rscale2)^i, i=0,...
+C     hexp1tmp: pre-allocated scratch, size (nd, 0:*) >= nterms1
+C     hexp2tmp: pre-allocated scratch, size (nd, 0:*) >= nterms2
+C---------------------------------------------------------------------
+C     OUTPUT:
+C     hexp2  : shifted multipole expansion (incremented)
+C---------------------------------------------------------------------
+      integer nterms1,nterms2,i,j,ii,nd,ldc
+      real *8 carray(0:ldc,0:ldc)
+      complex *16 hexp1(nd,0:nterms1),hexp2(nd,0:nterms2)
+      complex *16 z0pow1(0:*),z0pow2(0:*)
+      complex *16 hexp1tmp(nd,0:*),hexp2tmp(nd,0:*)
+
+      do i=0,nterms1
+        do ii=1,nd
+          hexp1tmp(ii,i) = 0
+        enddo
+      enddo
+
+      do i=0,nterms2
+        do ii=1,nd
+          hexp2tmp(ii,i) = 0
+        enddo
+      enddo
+
+      do i=0,nterms1
+        do ii=1,nd
+          hexp1tmp(ii,i) = hexp1(ii,i)*z0pow1(i)
+        enddo
+      enddo
+
+      do ii=1,nd
+        hexp2tmp(ii,0) = hexp2tmp(ii,0) + hexp1(ii,0)
+      enddo
+
+      do i=1,nterms2
+        do ii=1,nd
+          hexp2tmp(ii,i) = hexp2tmp(ii,i) - hexp1tmp(ii,0)/i
+        enddo
+        do j=1,min(i,nterms1)
+          do ii=1,nd
+            hexp2tmp(ii,i) = hexp2tmp(ii,i) +
+     1          hexp1tmp(ii,j)*carray(i-1,j-1)
+          enddo
+        enddo
+        do ii=1,nd
+          hexp2tmp(ii,i) = hexp2tmp(ii,i)*z0pow2(i)
+        enddo
+      enddo
+
+      do i=0,nterms2
+        do ii=1,nd
+          hexp2(ii,i) = hexp2(ii,i) + hexp2tmp(ii,i)
+        enddo
+      enddo
+
+      return
+      end
+c
+c
+c
+c**********************************************************************
       subroutine l2dlocloc(nd,rscale1,center1,jexp1,nterms1,
      $                      rscale2,center2,jexp2,nterms2,carray,ldc)
       implicit none
@@ -1108,6 +1195,87 @@ c
           enddo
         enddo
 
+        do ii=1,nd
+          jexp2tmp(ii,i) = jexp2tmp(ii,i)*z0pow2(i)
+        enddo
+      enddo
+
+      do i=0,nterms2
+        do ii=1,nd
+          jexp2(ii,i) = jexp2(ii,i) + jexp2tmp(ii,i)
+        enddo
+      enddo
+
+      return
+      end
+c
+c
+c
+c**********************************************************************
+      subroutine l2dlocloc_work(nd,jexp1,nterms1,jexp2,nterms2,
+     $                           carray,ldc,z0pow1,z0pow2,
+     $                           jexp1tmp,jexp2tmp)
+      implicit none
+C**********************************************************************
+C
+C     Plan-based variant of l2dlocloc: shifts local expansion JEXP1
+C     to a new center and INCREMENTS JEXP2.
+C
+C     Accepts pre-allocated z0pow1, z0pow2, jexp1tmp, and jexp2tmp.
+C
+C       z0pow1(i) = (z0/rscale1)^i   (i = 0, 1, ...)
+C       z0pow2(i) = (rscale2/z0)^i   (i = 0, 1, ...)
+C
+C     For the plan, supply mpmp_z0pow2(0,iq) as z0pow1 and
+C     mpmp_z0pow1(0,iq) as z0pow2 (roles are swapped vs. l2dmpmp).
+C
+C---------------------------------------------------------------------
+C     INPUT:
+C     nd      : vector length
+C     jexp1   : original local expansion coefficients
+C     nterms1 : order of original expansion
+C     nterms2 : order of shifted expansion
+C     carray  : binomial table
+C     ldc     : leading dimension of carray
+C     z0pow1  : pre-computed (z0/rscale1)^i, i=0,...
+C     z0pow2  : pre-computed (rscale2/z0)^i, i=0,...
+C     jexp1tmp: pre-allocated scratch, size (nd, 0:*) >= nterms1
+C     jexp2tmp: pre-allocated scratch, size (nd, 0:*) >= nterms2
+C---------------------------------------------------------------------
+C     OUTPUT:
+C     jexp2  : shifted local expansion (incremented)
+C---------------------------------------------------------------------
+      integer nterms1,nterms2,i,j,ii,nd,ldc
+      real *8 carray(0:ldc,0:ldc)
+      complex *16 jexp1(nd,0:nterms1),jexp2(nd,0:nterms2)
+      complex *16 z0pow1(0:*),z0pow2(0:*)
+      complex *16 jexp1tmp(nd,0:*),jexp2tmp(nd,0:*)
+
+      do i=0,nterms1
+        do ii=1,nd
+          jexp1tmp(ii,i) = 0
+        enddo
+      enddo
+
+      do i=0,nterms2
+        do ii=1,nd
+          jexp2tmp(ii,i) = 0
+        enddo
+      enddo
+
+      do i=0,nterms1
+        do ii=1,nd
+          jexp1tmp(ii,i) = jexp1(ii,i)*z0pow1(i)
+        enddo
+      enddo
+
+      do i=0,nterms2
+        do j=i,nterms1
+          do ii=1,nd
+            jexp2tmp(ii,i) = jexp2tmp(ii,i) +
+     1          jexp1tmp(ii,j)*carray(j,i)
+          enddo
+        enddo
         do ii=1,nd
           jexp2tmp(ii,i) = jexp2tmp(ii,i)*z0pow2(i)
         enddo
@@ -1249,7 +1417,8 @@ c
 c**********************************************************************
       subroutine l2dmploc_work(nd,rscale1,center1,hexp1,nterms1,
      $                          rscale2,center2,jexp2,nterms2,
-     $                          carray,ldc,hexp1tmp,jexp2tmp)
+     $                          carray,ldc,z0pow1,z0pow2,
+     $                          hexp1tmp,jexp2tmp)
       implicit none
 C**********************************************************************
 C
@@ -1257,9 +1426,8 @@ C     Shift local expansions HEXP1 to a new center and INCREMENT
 C     the local expansions JEXP2 accordingly.
 C
 C     This is the plan-based variant of l2dmploc: it accepts
-C     pre-allocated scratch arrays hexp1tmp and jexp2tmp as arguments
-C     instead of allocating them internally.  The caller must supply
-C     arrays of size at least (nd, 0:nterms1) and (nd, 0:nterms2).
+C     pre-allocated scratch arrays z0pow1, z0pow2, hexp1tmp, and
+C     jexp2tmp instead of allocating them internally.
 C
 C---------------------------------------------------------------------
 C     INPUT:
@@ -1273,6 +1441,8 @@ C     center2 : center of shifted local expansion
 C     nterms2 : order of output local expansion
 C     carray  : array of binomial coefficients
 C     ldc     : leading dimension of carray
+C     z0pow1  : pre-allocated scratch, size at least 0:nmax
+C     z0pow2  : pre-allocated scratch, size at least 0:nmax
 C     hexp1tmp: pre-allocated scratch, size (nd, 0:nterms1) or larger
 C     jexp2tmp: pre-allocated scratch, size (nd, 0:nterms2) or larger
 C---------------------------------------------------------------------
@@ -1283,8 +1453,8 @@ C---------------------------------------------------------------------
       real *8 rscale1,rscale2,center1(2),center2(2),zdiff(2)
       real *8 carray(0:ldc,0:ldc)
       complex *16 hexp1(nd,0:nterms1),jexp2(nd,0:nterms2)
+      complex *16 z0pow1(0:*),z0pow2(0:*)
       complex *16 hexp1tmp(nd,0:*),jexp2tmp(nd,0:*)
-      complex *16, allocatable :: z0pow1(:),z0pow2(:)
       real *8 rtmp
       complex *16 z0,ztemp1,ztemp2,ztemp3
 c
@@ -1295,8 +1465,6 @@ c
       zdiff(2)=center2(2)-center1(2)
       z0 = -dcmplx(zdiff(1),zdiff(2))
 
-      allocate(z0pow1(0:nmax))
-      allocate(z0pow2(0:nmax))
       ztemp1 = 1/z0
       z0pow1(0) = 1
       z0pow2(0) = 1

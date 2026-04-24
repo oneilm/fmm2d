@@ -74,12 +74,24 @@ module cfmm2d_plan_mod
     real*8,  allocatable :: rmlexp(:)
     integer :: rmlexp_nd = 0
 
-    ! Pre-allocated M2L scratch arrays for step 4.
-    ! Indexed as mploc_hexp1tmp(nd, 0:nmax, nthreads) so each OpenMP
-    ! thread has its own private workspace without repeated allocation.
-    ! Reallocated at execute time when nd changes.
-    complex*16, allocatable :: mploc_hexp1tmp(:,:,:)
-    complex*16, allocatable :: mploc_jexp2tmp(:,:,:)
+    ! Precomputed M2M/L2L z0pow by child quadrant (build-time, size 8*(nmax+1)).
+    ! Quadrant encoding: q=1=(+x,+y), q=2=(+x,-y), q=3=(-x,+y), q=4=(-x,-y).
+    ! mpmp_z0pow1(k,q) = (rscale_child/z0)^k  used in M2M (step 3).
+    ! mpmp_z0pow2(k,q) = (z0/rscale_parent)^k used in M2M (step 3).
+    ! For L2L (step 5): pass mpmp_z0pow2 as z0pow1, mpmp_z0pow1 as z0pow2.
+    complex*16, allocatable :: mpmp_z0pow1(:,:)   ! (0:nmax, 4)
+    complex*16, allocatable :: mpmp_z0pow2(:,:)   ! (0:nmax, 4)
+
+    ! Per-thread scratch (allocated at execute time, reallocated when nd changes).
+    ! mploc_*: step 4 (M2L),  mpmp_*: step 3 (M2M),  locloc_*: step 5 (L2L).
+    complex*16, allocatable :: mploc_hexp1tmp(:,:,:)   ! (nd, 0:nmax, nthreads)
+    complex*16, allocatable :: mploc_jexp2tmp(:,:,:)   ! (nd, 0:nmax, nthreads)
+    complex*16, allocatable :: mploc_z0pow1(:,:)       ! (0:nmax, nthreads)
+    complex*16, allocatable :: mploc_z0pow2(:,:)       ! (0:nmax, nthreads)
+    complex*16, allocatable :: mpmp_hexp1tmp(:,:,:)    ! (nd, 0:nmax, nthreads)
+    complex*16, allocatable :: mpmp_hexp2tmp(:,:,:)    ! (nd, 0:nmax, nthreads)
+    complex*16, allocatable :: locloc_jexp1tmp(:,:,:)  ! (nd, 0:nmax, nthreads)
+    complex*16, allocatable :: locloc_jexp2tmp(:,:,:)  ! (nd, 0:nmax, nthreads)
     integer :: mploc_nd = 0
   end type cfmm2d_plan_t
 
@@ -117,7 +129,8 @@ subroutine cfmm2d_build_plan(eps, ns, sources, nt, targ, ier)
   integer :: nlmin, nlmax, ifunif, iper
   integer :: nlevels, nboxes, ltree, ndiv, idivflag
   integer :: ifcharge_t, ifdipole_t, ifpgh_t, ifpghtarg_t
-  integer :: i, ibox, nmax, lmptot_1
+  integer :: i, ibox, nmax, lmptot_1, iq, k
+  complex*16 :: base1, base2
 
   ier = 0
   nlmin = 0
@@ -235,6 +248,35 @@ subroutine cfmm2d_build_plan(eps, ns, sources, nt, targ, ier)
 
   the_plan%thresh = the_plan%boxsize(0) * 2.0d0**(-51)
 
+  ! Precompute M2M/L2L z0pow for the 4 child quadrants.
+  ! For a child in quadrant q, z0 = child_center - parent_center = (±bs/4, ±bs/4),
+  ! rscale_child = bs/2, rscale_parent = bs.  The ratio rscale_child/z0 = 2/(±1±i)
+  ! is level-independent so only 4 arrays of length nmax+1 are needed.
+  ! Quadrant: q=1=(+x,+y), q=2=(+x,-y), q=3=(-x,+y), q=4=(-x,-y).
+  allocate(the_plan%mpmp_z0pow1(0:nmax, 4))
+  allocate(the_plan%mpmp_z0pow2(0:nmax, 4))
+  do iq = 1, 4
+    if (iq .eq. 1) then
+      base1 = dcmplx( 1.0d0, -1.0d0)    ! 2/(1+i)  = 1-i
+      base2 = dcmplx( 0.25d0,  0.25d0)  ! (1+i)/4
+    else if (iq .eq. 2) then
+      base1 = dcmplx( 1.0d0,  1.0d0)    ! 2/(1-i)  = 1+i
+      base2 = dcmplx( 0.25d0, -0.25d0)  ! (1-i)/4
+    else if (iq .eq. 3) then
+      base1 = dcmplx(-1.0d0, -1.0d0)    ! 2/(-1+i) = -1-i
+      base2 = dcmplx(-0.25d0,  0.25d0)  ! (-1+i)/4
+    else
+      base1 = dcmplx(-1.0d0,  1.0d0)    ! 2/(-1-i) = -1+i
+      base2 = dcmplx(-0.25d0, -0.25d0)  ! (-1-i)/4
+    endif
+    the_plan%mpmp_z0pow1(0, iq) = 1.0d0
+    the_plan%mpmp_z0pow2(0, iq) = 1.0d0
+    do k = 1, nmax
+      the_plan%mpmp_z0pow1(k, iq) = the_plan%mpmp_z0pow1(k-1, iq) * base1
+      the_plan%mpmp_z0pow2(k, iq) = the_plan%mpmp_z0pow2(k-1, iq) * base2
+    enddo
+  enddo
+
   plan_built = .true.
   return
 end subroutine cfmm2d_build_plan
@@ -330,18 +372,33 @@ subroutine cfmm2d_execute_plan(nd, ifcharge, charge, ifdipole, dipstr, &
     the_plan%rmlexp_nd = nd
   endif
 
-  ! (Re)allocate per-thread M2L scratch arrays if nd changed
+  ! (Re)allocate all per-thread scratch arrays if nd changed.
+  ! mploc_z0pow1/z0pow2 don't depend on nd but are grouped here for simplicity.
   nthreads = omp_get_max_threads()
   if (the_plan%mploc_nd .ne. nd) then
-    if (allocated(the_plan%mploc_hexp1tmp)) &
-      deallocate(the_plan%mploc_hexp1tmp)
-    if (allocated(the_plan%mploc_jexp2tmp)) &
-      deallocate(the_plan%mploc_jexp2tmp)
-    allocate(the_plan%mploc_hexp1tmp(nd, 0:the_plan%nmax, nthreads), &
-             stat=ier)
+    if (allocated(the_plan%mploc_hexp1tmp))   deallocate(the_plan%mploc_hexp1tmp)
+    if (allocated(the_plan%mploc_jexp2tmp))   deallocate(the_plan%mploc_jexp2tmp)
+    if (allocated(the_plan%mploc_z0pow1))     deallocate(the_plan%mploc_z0pow1)
+    if (allocated(the_plan%mploc_z0pow2))     deallocate(the_plan%mploc_z0pow2)
+    if (allocated(the_plan%mpmp_hexp1tmp))    deallocate(the_plan%mpmp_hexp1tmp)
+    if (allocated(the_plan%mpmp_hexp2tmp))    deallocate(the_plan%mpmp_hexp2tmp)
+    if (allocated(the_plan%locloc_jexp1tmp))  deallocate(the_plan%locloc_jexp1tmp)
+    if (allocated(the_plan%locloc_jexp2tmp))  deallocate(the_plan%locloc_jexp2tmp)
+    allocate(the_plan%mploc_hexp1tmp(nd, 0:the_plan%nmax, nthreads), stat=ier)
     if (ier .ne. 0) return
-    allocate(the_plan%mploc_jexp2tmp(nd, 0:the_plan%nmax, nthreads), &
-             stat=ier)
+    allocate(the_plan%mploc_jexp2tmp(nd, 0:the_plan%nmax, nthreads), stat=ier)
+    if (ier .ne. 0) return
+    allocate(the_plan%mploc_z0pow1(0:the_plan%nmax, nthreads), stat=ier)
+    if (ier .ne. 0) return
+    allocate(the_plan%mploc_z0pow2(0:the_plan%nmax, nthreads), stat=ier)
+    if (ier .ne. 0) return
+    allocate(the_plan%mpmp_hexp1tmp(nd, 0:the_plan%nmax, nthreads), stat=ier)
+    if (ier .ne. 0) return
+    allocate(the_plan%mpmp_hexp2tmp(nd, 0:the_plan%nmax, nthreads), stat=ier)
+    if (ier .ne. 0) return
+    allocate(the_plan%locloc_jexp1tmp(nd, 0:the_plan%nmax, nthreads), stat=ier)
+    if (ier .ne. 0) return
+    allocate(the_plan%locloc_jexp2tmp(nd, 0:the_plan%nmax, nthreads), stat=ier)
     if (ier .ne. 0) return
     the_plan%mploc_nd = nd
   endif
@@ -456,7 +513,11 @@ subroutine cfmm2d_execute_plan(nd, ifcharge, charge, ifdipole, dipstr, &
        the_plan%mnlist3, the_plan%nlist3s, the_plan%list3, &
        the_plan%mnlist4, the_plan%nlist4s, the_plan%list4, &
        the_plan%nmax, the_plan%mploc_hexp1tmp, &
-       the_plan%mploc_jexp2tmp)
+       the_plan%mploc_jexp2tmp, &
+       the_plan%mploc_z0pow1, the_plan%mploc_z0pow2, &
+       the_plan%mpmp_z0pow1, the_plan%mpmp_z0pow2, &
+       the_plan%mpmp_hexp1tmp, the_plan%mpmp_hexp2tmp, &
+       the_plan%locloc_jexp1tmp, the_plan%locloc_jexp2tmp)
 
   ! Reorder outputs back to original index order
   if (ifpgh .eq. 1) then
@@ -521,10 +582,18 @@ subroutine cfmm2d_destroy_plan(ier)
   if (allocated(the_plan%list3))      deallocate(the_plan%list3)
   if (allocated(the_plan%nlist4s))    deallocate(the_plan%nlist4s)
   if (allocated(the_plan%list4))      deallocate(the_plan%list4)
-  if (allocated(the_plan%carray))           deallocate(the_plan%carray)
-  if (allocated(the_plan%rmlexp))           deallocate(the_plan%rmlexp)
-  if (allocated(the_plan%mploc_hexp1tmp))   deallocate(the_plan%mploc_hexp1tmp)
-  if (allocated(the_plan%mploc_jexp2tmp))   deallocate(the_plan%mploc_jexp2tmp)
+  if (allocated(the_plan%carray))            deallocate(the_plan%carray)
+  if (allocated(the_plan%rmlexp))            deallocate(the_plan%rmlexp)
+  if (allocated(the_plan%mpmp_z0pow1))       deallocate(the_plan%mpmp_z0pow1)
+  if (allocated(the_plan%mpmp_z0pow2))       deallocate(the_plan%mpmp_z0pow2)
+  if (allocated(the_plan%mploc_hexp1tmp))    deallocate(the_plan%mploc_hexp1tmp)
+  if (allocated(the_plan%mploc_jexp2tmp))    deallocate(the_plan%mploc_jexp2tmp)
+  if (allocated(the_plan%mploc_z0pow1))      deallocate(the_plan%mploc_z0pow1)
+  if (allocated(the_plan%mploc_z0pow2))      deallocate(the_plan%mploc_z0pow2)
+  if (allocated(the_plan%mpmp_hexp1tmp))     deallocate(the_plan%mpmp_hexp1tmp)
+  if (allocated(the_plan%mpmp_hexp2tmp))     deallocate(the_plan%mpmp_hexp2tmp)
+  if (allocated(the_plan%locloc_jexp1tmp))   deallocate(the_plan%locloc_jexp1tmp)
+  if (allocated(the_plan%locloc_jexp2tmp))   deallocate(the_plan%locloc_jexp2tmp)
 
   the_plan%ns        = 0
   the_plan%nt        = 0
